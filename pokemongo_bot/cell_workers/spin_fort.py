@@ -5,6 +5,7 @@ from __future__ import absolute_import
 from datetime import datetime, timedelta
 import sys
 import time
+from random import random
 
 from pgoapi.utilities import f2i
 from pokemongo_bot import inventory
@@ -32,6 +33,8 @@ class SpinFort(BaseTask):
         self.next_update = datetime.now() + timedelta(0, 10)
 
         self.ignore_item_count = self.config.get("ignore_item_count", False)
+        self.spin_min_ball = self.config.get("spin_min_ball", 20)
+        self.spin_max_ball = self.config.get("spin_max_ball", 100)
         self.spin_wait_min = self.config.get("spin_wait_min", 2)
         self.spin_wait_max = self.config.get("spin_wait_max", 3)
         self.min_interval = int(self.config.get('min_interval', 120))
@@ -48,6 +51,9 @@ class SpinFort(BaseTask):
 
 
     def work(self):
+        if self.bot.last_catch_cooldown > time.time():
+            return WorkerResult.SUCCESS
+
         forts = self.get_forts_in_range()
 
         with self.bot.database as conn:
@@ -73,6 +79,21 @@ class SpinFort(BaseTask):
 
         details = fort_details(self.bot, fort['id'], lat, lng)
         fort_name = details.get('name', 'Unknown')
+
+        pokeballs_quantity = inventory.items().get(1).count \
+                             + inventory.items().get(2).count \
+                             + inventory.items().get(3).count
+        spin_random_factor = 1.0*(self.spin_max_ball-pokeballs_quantity)/(self.spin_max_ball-self.spin_min_ball)
+        if pokeballs_quantity > self.spin_max_ball \
+           or (pokeballs_quantity > self.spin_min_ball and random() >= spin_random_factor):
+            self.bot.fort_timeouts[fort["id"]] = (time.time() + 120) * 1000  # Don't spin for 2m
+            self.bot.recent_forts = self.bot.recent_forts[1:] + [fort['id']]
+            self.emit_event(
+                'pokestop_empty',
+                formatted='Skip pokestop {pokestop}.',
+                data={'pokestop': fort_name}
+            )
+            return WorkerResult.SUCCESS
 
         response_dict = self.bot.api.fort_search(
             fort_id=fort['id'],
