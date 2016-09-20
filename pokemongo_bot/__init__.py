@@ -102,6 +102,7 @@ class PokemonGoBot(object):
         self.last_map_object = None
         self.last_time_map_object = 0
         self.logger = logging.getLogger(type(self).__name__)
+        self.path_ptr = None
         self.alt = self.config.gps_default_altitude
 
         # Make our own copy of the workers for this instance
@@ -123,6 +124,7 @@ class PokemonGoBot(object):
         self.inventory_refresh_counter = 0
         self.last_inventory_refresh = time.time()
 
+        self.last_catch_cooldown = time.time()
         self.capture_locked = False  # lock catching while moving to VIP pokemon
 
         client_id_file_path = os.path.join(_base_dir, 'data', 'mqtt_client_id')
@@ -832,7 +834,9 @@ class PokemonGoBot(object):
         )
         try:
             with open(user_data_lastlocation, 'w') as outfile:
-                json.dump({'lat': lat, 'lng': lng, 'alt': alt, 'start_position': self.start_position}, outfile)
+                json.dump({'lat': lat, 'lng': lng, 'alt': alt,
+                           'start_position': self.start_position,
+                           'path_ptr': self.path_ptr}, outfile)
         except IOError as e:
             self.logger.info('[x] Error while opening location file: %s' % e)
     def emit_forts_event(self,response_dict):
@@ -911,10 +915,13 @@ class PokemonGoBot(object):
         self.api.set_position(lat, lng, self.alt)  # or should the alt kept to zero?
 
         try:
-            self.api.login(
+            for i in range(10):
+                login_rc = self.api.login(
                     self.config.auth_service,
                     str(self.config.username),
                     str(self.config.password))
+                if login_rc:
+                    break
         except AuthException as e:
             self.event_manager.emit(
                     'login_failed',
@@ -923,6 +930,9 @@ class PokemonGoBot(object):
                     formatted='Login process failed: {}'.format(e));
 
             sys.exit()
+
+        if not login_rc:
+            raise RuntimeError('Login failed more than 10 times, terminating the attempt.')
 
         with self.database as conn:
             c = conn.cursor()
@@ -1260,6 +1270,9 @@ class PokemonGoBot(object):
                         'distance_unit': ''
                     }
                 )
+
+                if 'path_ptr' in location_json:
+                    self.path_ptr = location_json['path_ptr']
 
                 has_position = True
             except Exception:
