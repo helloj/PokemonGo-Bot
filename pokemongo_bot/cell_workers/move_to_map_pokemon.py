@@ -119,6 +119,12 @@ class MoveToMapPokemon(BaseTask):
                 pokemon['disappear_time'] = disappear
                 pokemon['name'] = self.pokemon_data[pokemon['pokemon_id'] - 1]['Name']
                 pokemon['is_vip'] = pokemon['name'] in self.bot.config.vips
+
+                if self.bot.config.unique_catch:
+                    if inventory.pokemons().count(pokemon['pokemon_id']) > 0:
+                        continue
+                    pokemon['is_vip'] = True
+
             except TypeError:
                 continue
             except KeyError:
@@ -165,6 +171,7 @@ class MoveToMapPokemon(BaseTask):
             return []
 
         tmp_pokemon_list, self.bot.mqtt_pokemon_list = self.bot.mqtt_pokemon_list, []
+        print(" ==>> from social: %s" % len(tmp_pokemon_list))
         return self.pokemons_parser(tmp_pokemon_list)
 
     def get_pokemon_from_url(self):
@@ -178,7 +185,9 @@ class MoveToMapPokemon(BaseTask):
             self._emit_failure('JSON format is not valid')
             return []
 
-        return self.pokemons_parser(response.get('pokemons', []))
+        tmp_pokemon_list = response.get('pokemons', [])
+        print(" ==>> from map: %s" % len(tmp_pokemon_list))
+        return self.pokemons_parser(tmp_pokemon_list)
 
     # TODO: refactor
     def is_inspected(self, pokemon):
@@ -279,6 +288,9 @@ class MoveToMapPokemon(BaseTask):
             json.dump(self.cache, outfile)
 
     def work(self):
+        if self.bot.last_catch_cooldown > time.time():
+            return WorkerResult.SUCCESS
+
         # check for pokeballs (excluding masterball)
         pokeballs_quantity = inventory.items().get(POKEBALL_ID).count
         superballs_quantity = inventory.items().get(GREATBALL_ID).count
@@ -305,12 +317,17 @@ class MoveToMapPokemon(BaseTask):
         if self.bot.config.enable_social:
             if self.snip_enabled:
                 self.by_pass_times += 1
-                if self.by_pass_times < self.config.get('skip_rounds', 30):
-                    if self.debug:
-                        self._emit_log("Skipping pass {}".format(self.by_pass_times))
-                    return WorkerResult.SUCCESS
-                self.by_pass_times = 0
-            pokemon_list = self.get_pokemon_from_social()
+            #    if self.by_pass_times < self.config.get('skip_rounds', 30):
+            #        if self.debug:
+            #            self._emit_log("Skipping pass {}".format(self.by_pass_times))
+            #        return WorkerResult.SUCCESS
+            #    self.by_pass_times = 0
+            if self.by_pass_times % self.config.get('skip_rounds', 30) == 0:
+                pokemon_list = self.get_pokemon_from_social()
+            elif self.by_pass_times % self.config.get('skip_rounds', 30) == 2:
+                pokemon_list = self.get_pokemon_from_url()
+            else:
+                return WorkerResult.SUCCESS
         else:
             pokemon_list = self.get_pokemon_from_url()
 

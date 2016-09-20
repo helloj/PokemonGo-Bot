@@ -112,6 +112,9 @@ class PokemonCatchWorker(BaseTask):
     ############################################################################
 
     def work(self, response_dict=None):
+        if self.bot.last_catch_cooldown > time.time():
+            return WorkerResult.SUCCESS
+
         response_dict = response_dict or self.create_encounter_api_call()
 
         # validate response
@@ -127,6 +130,8 @@ class PokemonCatchWorker(BaseTask):
                 self.emit_event('pokemon_not_in_range', formatted='Incensed Pokemon went out of range!')
             elif response[self.response_status_key] == ENCOUNTER_STATUS_POKEMON_INVENTORY_FULL:
                 self.emit_event('pokemon_inventory_full', formatted='Your Pokemon inventory is full! Could not catch!')
+            else:
+                self.emit_event('pokemon_not_in_range', formatted='Unknown error! (%s)' % response[self.response_status_key])
             return WorkerResult.ERROR
 
         # get pokemon data
@@ -134,7 +139,22 @@ class PokemonCatchWorker(BaseTask):
         pokemon = Pokemon(pokemon_data)
 
         # check if vip pokemon
-        is_vip = self._is_vip_pokemon(pokemon)
+        if self.bot.config.unique_catch:
+            if inventory.pokemons().count(pokemon.pokemon_id) > 0:
+                self.emit_event(
+                    'pokemon_appeared',
+                    formatted='Skip unique catch {pokemon}! [CP {cp}] [Potential {iv}] [A/D/S {iv_display}]',
+                    data={
+                        'pokemon': pokemon.name,
+                        'cp': pokemon.cp,
+                        'iv': pokemon.iv,
+                        'iv_display': pokemon.iv_display,
+                    }
+                )
+                return WorkerResult.SUCCESS
+            is_vip = True
+        else:
+            is_vip = self._is_vip_pokemon(pokemon)
 
         # skip ignored pokemon
         if (not self._should_catch_pokemon(pokemon) and not is_vip) or self.bot.catch_disabled:            
@@ -216,7 +236,8 @@ class PokemonCatchWorker(BaseTask):
                 break
 
         # simulate app
-        time.sleep(5)
+        #time.sleep(5)
+        self.bot.last_catch_cooldown = time.time() + 5
 
     def create_encounter_api_call(self):
         encounter_id = self.pokemon['encounter_id']
@@ -286,6 +307,9 @@ class PokemonCatchWorker(BaseTask):
             return False
 
         if pokemon_config.get('always_catch', False):
+            return True
+
+        if pokemon.candy_quantity < pokemon_config.get('catch_below_candy', 0):
             return True
 
         if pokemon_config.get('catch_above_ncp',-1) >= 0:

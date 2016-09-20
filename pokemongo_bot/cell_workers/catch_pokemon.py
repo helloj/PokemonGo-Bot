@@ -4,6 +4,7 @@ from __future__ import absolute_import
 
 import json
 import os
+import time
 import random
 
 from pokemongo_bot.base_task import BaseTask
@@ -23,6 +24,9 @@ class CatchPokemon(BaseTask):
         self.pokemon = []
 
     def work(self):
+        if self.bot.last_catch_cooldown > time.time():
+            return WorkerResult.SUCCESS
+
         # make sure we have SOME balls
         if sum([inventory.items().get(ball.value).count for ball in
     [Item.ITEM_POKE_BALL, Item.ITEM_GREAT_BALL, Item.ITEM_ULTRA_BALL]]) <= 0:
