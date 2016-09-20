@@ -33,7 +33,10 @@ class FollowPath(BaseTask):
         self.distance_unit = self.bot.config.distance_unit
         self.append_unit = False
 
-        if self.path_start_mode == 'closest':
+        if self.bot.config.location_cache and self.bot.path_ptr is not None:
+            self.ptr = self.bot.path_ptr
+
+        elif self.path_start_mode == 'closest':
             self.ptr = self.find_closest_point_idx(self.points)
 
         else:
@@ -152,6 +155,9 @@ class FollowPath(BaseTask):
 
         last_lat, last_lng, last_alt = self.bot.position
 
+        if self.ptr > len(self.points):
+            self.ptr = 0
+
         point = self.points[self.ptr]
         lat = point['lat']
         lng = point['lng']
@@ -210,6 +216,7 @@ class FollowPath(BaseTask):
                     self.status = STATUS_FINISHED
                     return WorkerResult.SUCCESS
                 self.ptr = 0
+                self.bot.recent_forts = [None] * len(self.bot.recent_forts)
                 if self.path_mode == 'linear':
                     self.points = list(reversed(self.points))
                 if self.number_lap_max >= 0:
@@ -226,6 +233,7 @@ class FollowPath(BaseTask):
                         self.endLaps()
             else:
                 self.ptr += 1
+            self.bot.path_ptr = self.ptr
         
         self.status = STATUS_MOVING
         return WorkerResult.RUNNING
