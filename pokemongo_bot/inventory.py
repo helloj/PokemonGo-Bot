@@ -498,17 +498,29 @@ class Pokemons(_BaseInventoryComponent):
         # count pokemon AND eggs, since eggs are counted as bag space
         return super(Pokemons, self).all()
 
+    def refresh(self, inventory):
+        super(Pokemons, self).refresh(inventory)
+        self._count = [0] * (len(self.STATIC_DATA) + 1)
+        for pokemon in self.all():
+            self._count[pokemon.pokemon_id] += 1
+        #print("uncatched list: %s" % [i for i in range(1,len(self._count)) if self._count[i]==0])
+
+    def count(self, pokemon_id):
+        return self._count[pokemon_id]
+
     def add(self, pokemon):
         if pokemon.unique_id <= 0:
             raise ValueError("Can't add a pokemon without id")
         if pokemon.unique_id in self._data:
             raise ValueError("Pokemon already present in the inventory")
         self._data[pokemon.unique_id] = pokemon
+        self._count[pokemon.pokemon_id] += 1
 
     def remove(self, pokemon_unique_id):
         if pokemon_unique_id not in self._data:
             raise ValueError("Pokemon not present in the inventory")
-        self._data.pop(pokemon_unique_id)
+        pokemon = self._data.pop(pokemon_unique_id)
+        self._count[pokemon.pokemon_id] -= 1
 
 
 #
