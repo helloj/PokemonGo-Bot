@@ -16,6 +16,7 @@ class MoveToFort(BaseTask):
 
     def initialize(self):
         self.lure_distance = 0
+        self.max_distance = self.config.get("max_distance", 100)
         self.lure_attraction = self.config.get("lure_attraction", True)
         self.lure_max_distance = self.config.get("lure_max_distance", 2000)
         self.ignore_item_count = self.config.get("ignore_item_count", False)
@@ -97,6 +98,8 @@ class MoveToFort(BaseTask):
             if not step_walker.step():
                 return WorkerResult.RUNNING
         else:
+            if fortID:
+                self.bot.recent_forts = self.bot.recent_forts[1:] + [fortID] # hj
             if nearest_fort.get('active_fort_modifier') and self.wait_at_fort:
                 if self.wait_log_sent == None or self.wait_log_sent < datetime.now() - timedelta(seconds=60):
                     self.wait_log_sent = datetime.now()
@@ -164,11 +167,11 @@ class MoveToFort(BaseTask):
             forts
         )
 
-        next_attracted_pts, lure_distance = self._get_nearest_fort_on_lure_way(forts)
-
         # Remove all forts which were spun in the last ticks to avoid circles if set
         if self.bot.config.forts_avoid_circles or not self.wait_at_fort:
             forts = filter(lambda x: x["id"] not in self.bot.recent_forts, forts)
+
+        next_attracted_pts, lure_distance = self._get_nearest_fort_on_lure_way(forts)
 
         self.lure_distance = lure_distance
 
@@ -176,6 +179,12 @@ class MoveToFort(BaseTask):
             return next_attracted_pts
 
         if len(forts):
+            dist_me = distance(self.bot.position[0], self.bot.position[1],
+                               forts[0]['latitude'],forts[0]['longitude'])
+        else:
+            dist_me = 0
+
+        if dist_me > 0 and dist_me < self.max_distance:
             return forts[0]
         else:
             return None
