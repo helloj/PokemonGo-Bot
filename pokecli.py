@@ -689,6 +689,15 @@ def init_config():
         default=8.0
     )
     add_config(
+        parser,
+        load,
+        long_flag="--unique_catch",
+        help="Unique catch",
+        type=bool,
+        default=False
+    )
+
+    add_config(
          parser,
          load,
          long_flag="--enable_social",
