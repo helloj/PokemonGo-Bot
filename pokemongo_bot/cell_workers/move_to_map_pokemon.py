@@ -61,6 +61,12 @@ import time
 import json
 import requests
 
+import re
+import Queue
+import threading
+from itertools import groupby
+from socketIO_client import SocketIO, BaseNamespace
+
 from pokemongo_bot import inventory
 from pokemongo_bot.base_dir import _base_dir
 from pokemongo_bot.cell_workers.utils import distance, format_dist, format_time, fort_details
@@ -68,19 +74,30 @@ from pokemongo_bot.walkers.walker_factory import walker_factory
 from pokemongo_bot.worker_result import WorkerResult
 from pokemongo_bot.base_task import BaseTask
 from pokemongo_bot.cell_workers.pokemon_catch_worker import PokemonCatchWorker
-from random import uniform
+from random import uniform, shuffle
 from pokemongo_bot.constants import Constants
 
 ULTRABALL_ID = 3
 GREATBALL_ID = 2
 POKEBALL_ID = 1
 
+def tryFloat(val, defVal = 0):
+   try:
+     return float(val)
+   except ValueError:
+     return defVal
 
 class MoveToMapPokemon(BaseTask):
     """Task for moving a trainer to a Pokemon."""
     SUPPORTED_TASK_API_VERSION = 1
 
     def initialize(self):
+        self.hj_mode = self.config.get('hj_mode', False)
+        if self.hj_mode:
+            self.pokezz_list = []
+            self.pokezz()
+            self.catch1 = self.config.get('catch1', [])
+            shuffle(self.catch1)
         self.last_map_update = 0
         self.pokemon_data = self.bot.pokemon_list
         self.unit = self.bot.config.distance_unit
@@ -100,6 +117,39 @@ class MoveToMapPokemon(BaseTask):
             )
         self.alt = uniform(self.bot.config.alt_min, self.bot.config.alt_max)
         self.debug = self.config.get('debug', False)
+
+    def pokezz(self):
+      self.pokezz_sock = SocketIO(
+        host='https://pokezz.com',
+        verify=False,
+        Namespace=BaseNamespace,
+        headers={
+          'Referer': 'https://pokezz.com/',
+          'Host': 'pokezz.com',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Safari/537.36',
+          'Origin': 'https://pokezz.com',
+        }
+      )
+      self.pokezz_sock.on('b', self.pokezz_noti)
+      self.pokezz_thread = threading.Thread(target=self.pokezz_thread_process)
+      self.pokezz_thread.start()
+
+    def pokezz_thread_process(self):
+      self.pokezz_sock.wait()
+
+    def pokezz_noti(self, data):
+      m = data.split('|')
+      if m[4] != '1':
+        return
+
+      self.pokezz_list.append({
+        'pokemon_id': int(m[0]),
+        'name': self.pokemon_data[int(m[0]) - 1]['Name'],
+        'latitude': float(m[1]),
+        'longitude': float(m[2]),
+        'disappear_time': int(tryFloat(m[3]))*1000,
+        'iv': tryFloat(m[6]),
+      })
 
     def pokemons_parser(self, pokemon_list):
         pokemons = []
@@ -165,12 +215,44 @@ class MoveToMapPokemon(BaseTask):
 
         return pokemons
 
+    def get_pokemon_from_pokezz(self):
+        if not self.hj_mode:
+            return []
+
+        tmp_pokemon_list, self.pokezz_list = self.pokezz_list, []
+        olen = len(tmp_pokemon_list)
+
+        # round robin priority
+        if self.hj_mode == 'rr':
+            rr_priority = 999
+            for name in self.catch1:
+                self.config['catch'][name] = rr_priority
+                rr_priority -= 1
+            self.catch1.append(self.catch1.pop(0))
+            tmp_pokemon_list = filter(lambda x: x["iv"] >= 20, tmp_pokemon_list)
+            tmp_pokemon_list.sort(key=lambda x: (x['pokemon_id'],-x['iv']))
+        elif self.hj_mode == 'group':
+            tmp_pokemon_list = filter(lambda x: x["iv"] >= 90, tmp_pokemon_list)
+            tmp_pokemon_list.sort(key=lambda x: (x['pokemon_id'],-x['iv']))
+            groups = []
+            for k, g in groupby(tmp_pokemon_list, lambda x: x['pokemon_id']):
+                for t in g:
+                    groups.append(t)
+                    tm = time.strftime('%H:%M:%S', time.localtime(int(t['disappear_time'])/1000))
+                    self._emit_log("%s %s%% %s (%s,%s)" % (t['name'],t['iv'],tm,t['latitude'],t['longitude']))
+                    break
+            tmp_pokemon_list = groups
+
+        tmp_pokemon_list = self.pokemons_parser(tmp_pokemon_list)
+        self._emit_log(" ==>> from pokezz: %s/%s" % (len(tmp_pokemon_list),olen))
+        return tmp_pokemon_list
+        #return self.pokemons_parser(tmp_pokemon_list)
+
     def get_pokemon_from_social(self):
         if not hasattr(self.bot, 'mqtt_pokemon_list') or not self.bot.mqtt_pokemon_list:
             return []
 
         tmp_pokemon_list, self.bot.mqtt_pokemon_list = self.bot.mqtt_pokemon_list, []
-        print(" ==>> from social: %s" % len(tmp_pokemon_list))
         return self.pokemons_parser(tmp_pokemon_list)
 
     def get_pokemon_from_url(self):
@@ -185,7 +267,6 @@ class MoveToMapPokemon(BaseTask):
             return []
 
         tmp_pokemon_list = response.get('pokemons', [])
-        print(" ==>> from map: %s" % len(tmp_pokemon_list))
         return self.pokemons_parser(tmp_pokemon_list)
 
     # TODO: refactor
@@ -233,6 +314,11 @@ class MoveToMapPokemon(BaseTask):
 
         # If social is disabled, we will have to make sure the target still exists
         if verify:
+          for try_count in range(2):
+            if try_count == 1:
+                self._emit_failure('{} doesnt exist anymore. Retry after 5 seconds...'.format(pokemon['name']))
+                time.sleep(5)
+
             nearby_pokemons = []
             nearby_stuff = self.bot.get_meta_cell()
 
@@ -259,6 +345,10 @@ class MoveToMapPokemon(BaseTask):
                         pokemon['spawn_point_id'] = nearby_pokemon['spawn_point_id']
                         pokemon['disappear_time'] = nearby_pokemon['last_modified_timestamp_ms'] if is_wild else nearby_pokemon['expiration_timestamp_ms']
                     break
+
+            #  check exists or retry
+            if exists:
+                break
 
         # If target exists, catch it, otherwise ignore
         if exists:
@@ -307,21 +397,18 @@ class MoveToMapPokemon(BaseTask):
         if self.bot.config.enable_social:
             if self.snip_enabled:
                 self.by_pass_times += 1
-            #    if self.by_pass_times < self.config.get('skip_rounds', 30):
-            #        if self.debug:
-            #            self._emit_log("Skipping pass {}".format(self.by_pass_times))
-            #        return WorkerResult.SUCCESS
-            #    self.by_pass_times = 0
-            if self.by_pass_times % self.config.get('skip_rounds', 30) == 0:
-                pokemon_list = self.get_pokemon_from_social()
-            elif self.by_pass_times % self.config.get('skip_rounds', 30) == 2:
-                pokemon_list = self.get_pokemon_from_url()
-            else:
-                return WorkerResult.SUCCESS
+                if self.by_pass_times < self.config.get('skip_rounds', 30):
+                    if self.debug:
+                        self._emit_log("Skipping pass {}".format(self.by_pass_times))
+                    return WorkerResult.SUCCESS
+                self.by_pass_times = 0
+            #pokemon_list = self.get_pokemon_from_social()
+            pokemon_list = self.get_pokemon_from_pokezz()
         else:
             pokemon_list = self.get_pokemon_from_url()
 
-        pokemon_list.sort(key=lambda x: x['dist'])
+        if not self.hj_mode:
+            pokemon_list.sort(key=lambda x: x['dist'])
         if self.config['mode'] == 'priority':
             pokemon_list.sort(key=lambda x: x['priority'], reverse=True)
         if self.config['prioritize_vips']:
