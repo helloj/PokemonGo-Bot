@@ -94,11 +94,17 @@ class MoveToMapPokemon(BaseTask):
 
     def initialize(self):
         self.hj_mode = self.config.get('hj_mode', False)
-        if self.hj_mode:
+        self.iv_catch = self.config.get('iv_catch', 0.99)
+        self.iv_keep = self.config.get('iv_keep', 2)
+        self.powerup_candy = self.config.get('powerup_candy', 20)
+        if self.hj_mode == 'pokezz':
             self.pokezz_list = []
             self.pokezz()
-            self.catch1 = self.config.get('catch1', [])
-            shuffle(self.catch1)
+        elif self.hj_mode == 'pkget' or self.hj_mode == 'poke5566':
+            self.locs = self.config.get('locs', [])
+            shuffle(self.locs)
+            self.session = None
+        self.hj_switch = 0
         self.last_map_update = 0
         self.pokemon_data = self.bot.pokemon_list
         self.unit = self.bot.config.distance_unit
@@ -216,6 +222,45 @@ class MoveToMapPokemon(BaseTask):
 
         return pokemons
 
+    def hj_filter(self, pokemon_list):
+        if not len(pokemon_list):
+            return pokemon_list
+
+        family = {}
+        for p in inventory.pokemons().STATIC_DATA:
+            fid = p.first_evolution_id
+            if not family.has_key(fid):
+                family[fid] = {'candy':-1, 'iv':0, 'catch_candy':False, 'catch_iv':False}
+
+        for p in inventory.pokemons().all():
+            fid = p.first_evolution_id
+            if family[fid]['candy'] == -1:
+                family[fid]['candy'] = p.candy_quantity
+
+            if p.iv > self.iv_catch:
+                family[fid]['iv'] += 1
+                evolve_pid = p.pokemon_id
+                while inventory.pokemons().has_next_evolution(evolve_pid):
+                    family[fid]['candy'] -= inventory.pokemons().evolution_cost_for(evolve_pid)
+                    evolve_pid = inventory.pokemons().next_evolution_ids_for(evolve_pid)[0]
+
+            iv_keep = (self.iv_keep*3) if p.pokemon_id == 133 else self.iv_keep
+            family[fid]['catch_iv'] = family[fid]['iv'] < iv_keep
+            family[fid]['catch_candy'] = family[fid]['candy'] < self.powerup_candy
+
+        catch_list = []
+        for p in pokemon_list:
+            fid = inventory.pokemons().first_evolution_id_for(p['pokemon_id'])
+            if p['iv'] > self.iv_catch*100:
+                if family[fid]['catch_iv']:
+                    p['is_vip'] = True
+                    catch_list.append(p)
+            else:
+                if family[fid]['catch_candy']:
+                    catch_list.append(p)
+
+        return catch_list
+
     def get_pokemon_from_pokezz(self):
         if not self.hj_mode:
             return []
@@ -223,37 +268,175 @@ class MoveToMapPokemon(BaseTask):
         tmp_pokemon_list, self.pokezz_list = self.pokezz_list, []
         olen = len(tmp_pokemon_list)
 
-        # round robin priority
-        if self.hj_mode == 'rr':
-            rr_priority = 999
-            for name in self.catch1:
-                self.config['catch'][name] = rr_priority
-                rr_priority -= 1
-            self.catch1.append(self.catch1.pop(0))
-            tmp_pokemon_list = filter(lambda x: x["iv"] >= 20, tmp_pokemon_list)
-            tmp_pokemon_list.sort(key=lambda x: (x['pokemon_id'],-x['iv']))
-        elif self.hj_mode == 'group':
-            tmp_pokemon_list = filter(lambda x: x["iv"] >= 90, tmp_pokemon_list)
-            tmp_pokemon_list.sort(key=lambda x: (x['pokemon_id'],-x['iv']))
-            groups = []
-            for k, g in groupby(tmp_pokemon_list, lambda x: x['pokemon_id']):
-                for t in g:
-                    groups.append(t)
-                    tm = time.strftime('%H:%M:%S', time.localtime(int(t['disappear_time'])/1000))
-                    self._emit_log("%s %s%% %s (%s,%s)" % (t['name'],t['iv'],tm,t['latitude'],t['longitude']))
-                    break
-            tmp_pokemon_list = groups
+        tmp_pokemon_list.sort(key=lambda x: -x['iv'])
+        groups = []
+        for k, g in groupby(tmp_pokemon_list, lambda x: x['pokemon_id']):
+            for t in g:
+                groups.append(t)
+                tm = time.strftime('%H:%M:%S', time.localtime(int(t['disappear_time'])/1000))
+                self._emit_log("%s %s%% %s (%s,%s)" % (t['name'],t['iv'],tm,t['latitude'],t['longitude']))
+                break
+        tmp_pokemon_list = groups
 
-        tmp_pokemon_list = self.pokemons_parser(tmp_pokemon_list)
+        tmp_pokemon_list = filter(lambda x: x["iv"] >= 99, tmp_pokemon_list)
         self._emit_log(" ==>> from pokezz: %s/%s" % (len(tmp_pokemon_list),olen))
-        return tmp_pokemon_list
-        #return self.pokemons_parser(tmp_pokemon_list)
+        return self.pokemons_parser(tmp_pokemon_list)
+
+    def get_pokemon_from_pokesniper(self):
+        if not self.hj_mode:
+            return []
+
+        pokemon = ["", "Bulbasaur", "Ivysaur", "Venusaur", "Charmander", "Charmeleon", "Charizard", "Squirtle", "Wartortle", "Blastoise", "Caterpie", "Metapod", "Butterfree", "Weedle", "Kakuna", "Beedrill", "Pidgey", "Pidgeotto", "Pidgeot", "Rattata", "Raticate", "Spearow", "Fearow", "Ekans", "Arbok", "Pikachu", "Raichu", "Sandshrew", "Sandslash", "NidoranF", "Nidorina", "Nidoqueen", "NidoranM", "Nidorino", "Nidoking", "Clefairy", "Clefable", "Vulpix", "Ninetales", "Jigglypuff", "Wigglytuff", "Zubat", "Golbat", "Oddish", "Gloom", "Vileplume", "Paras", "Parasect", "Venonat", "Venomoth", "Diglett", "Dugtrio", "Meowth", "Persian", "Psyduck", "Golduck", "Mankey", "Primeape", "Growlithe", "Arcanine", "Poliwag", "Poliwhirl", "Poliwrath", "Abra", "Kadabra", "Alakazam", "Machop", "Machoke", "Machamp", "Bellsprout", "Weepinbell", "Victreebel", "Tentacool", "Tentacruel", "Geodude", "Graveler", "Golem", "Ponyta", "Rapidash", "Slowpoke", "Slowbro", "Magnemite", "Magneton", "Farfetch'd", "Doduo", "Dodrio", "Seel", "Dewgong", "Grimer", "Muk", "Shellder", "Cloyster", "Gastly", "Haunter", "Gengar", "Onix", "Drowzee", "Hypno", "Krabby", "Kingler", "Voltorb", "Electrode", "Exeggcute", "Exeggcutor", "Cubone", "Marowak", "Hitmonlee", "Hitmonchan", "Lickitung", "Koffing", "Weezing", "Rhyhorn", "Rhydon", "Chansey", "Tangela", "Kangaskhan", "Horsea", "Seadra", "Goldeen", "Seaking", "Staryu", "Starmie", "Mr. Mime", "Scyther", "Jynx", "Electabuzz", "Magmar", "Pinsir", "Tauros", "Magikarp", "Gyarados", "Lapras", "Ditto", "Eevee", "Vaporeon", "Jolteon", "Flareon", "Porygon", "Omanyte", "Omastar", "Kabuto", "Kabutops", "Aerodactyl", "Snorlax", "Articuno", "Zapdos", "Moltres", "Dratini", "Dragonair", "Dragonite", "Mewtwo", "Mew"];
+
+        url = 'http://pokesniper.org/newapiman.txt'
+        try:
+            request = requests.get(url)
+            response = request.json()
+        except requests.exceptions.ConnectionError:
+            self._emit_failure('Could not get data from {}'.format(url))
+            return []
+        except ValueError:
+            self._emit_failure('JSON format is not valid')
+            return []
+
+        olen = len(response)
+        tmp_pokemon_list = []
+        now = (time.time()+600) * 1000
+        for p in response:
+          try:
+            tmp_pokemon_list.append({
+                'pokemon_id': int(pokemon.index(p['name'])),
+                'name': p['name'],
+                'latitude': float(p['coords'].split(',')[0]),
+                'longitude': float(p['coords'].split(',')[1]),
+                'disappear_time': int(now),
+                'iv': tryFloat(p['iv']),
+            })
+          except:
+            self._emit_log(" wrong: %s" % p['name'])
+            pass
+
+        tmp_pokemon_list = filter(lambda x: x["iv"] >= 99, tmp_pokemon_list)
+        self._emit_log(" ==>> from pokesniper: %s/%s" % (len(tmp_pokemon_list),olen))
+        return self.pokemons_parser(tmp_pokemon_list)
+
+    def get_pokemon_from_poke5566(self):
+        if not self.hj_mode:
+            return []
+        if not self.locs:
+            return []
+
+        url0 = 'https://poke5566.com/'
+        if not self.session:
+            self.session = requests.Session()
+            self.session.headers.update({
+              'Referer': url0,
+              'X-Requested-With': 'XMLHttpRequest',
+              'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.116 Safari/537.36'
+            })
+            try:
+                self.session.get(url0)
+            except requests.exceptions.ConnectionError:
+                self.session = None
+                self._emit_failure('Could not init from {}'.format(url0))
+                return []
+
+        url = 'https://poke5566.com/pokemons'
+        loc = self.locs.pop(0)
+        self.locs.append(loc)
+        llen = 0.05
+        params = {
+            'lat0': loc[0] + llen,
+            'lng0': loc[1] + llen,
+            'lat1': loc[0] - llen,
+            'lng1': loc[1] - llen
+        }
+        cookies = {
+            'star':'3',
+            'iv':'80',
+            '_ga':'GA1.2.93737906.1475208123',
+            'poke5566':"lat0={lat0}&lng0={lng0}&lat1={lat1}&lng1={lng1}".format(**params)
+        }
+        try:
+            self.session.cookies.update(cookies)
+            request = self.session.get(url, params=params)
+            response = request.json()
+        except requests.exceptions.ConnectionError:
+            self._emit_failure('Could not get data from {}'.format(url))
+            return []
+        except ValueError:
+            self._emit_failure('JSON format is not valid')
+            return []
+
+        response = response.get('pokemons', [])
+        olen = len(response)
+        tmp_pokemon_list = [{
+            'pokemon_id': int(p['i']),
+            'name': self.pokemon_data[int(p['i']) - 1]['Name'],
+            'latitude': float(p['a']),
+            'longitude': float(p['n']),
+            'disappear_time': int(tryFloat(p['t'])),
+            'iv': p['v'][0] and tryFloat((p['v'][0]+p['v'][1]+p['v'][2])/45.*100) or 10.0,
+        } for p in response]
+
+        self._emit_log(" ==>> from poke5566: %s/%s, %s" % (len(tmp_pokemon_list), olen, loc[2]))
+        return self.pokemons_parser(tmp_pokemon_list)
+
+    def get_pokemon_from_pkget(self):
+        if not self.hj_mode:
+            return []
+        if not self.locs:
+            return []
+
+        url = 'https://pkget.com/pkm333.ashx'
+        loc = self.locs.pop(0)
+        self.locs.append(loc)
+        llen = 0.05
+        params = {
+            'v1': 111,
+            'v2': loc[0] + llen,
+            'v3': loc[1] + llen,
+            'v4': loc[0] - llen,
+            'v5': loc[1] - llen,
+            'v6': 0
+        }
+        headers = {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://pkget.com/',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.116 Safari/537.36'
+        }
+        try:
+            request = requests.get(url, params=params, headers=headers)
+            response = request.json()
+        except requests.exceptions.ConnectionError:
+            self._emit_failure('Could not get data from {}'.format(url))
+            return []
+        except ValueError:
+            self._emit_failure('JSON format is not valid')
+            return []
+
+        response = response.get('pk123', [])
+        olen = len(response)
+        tmp_pokemon_list = [{
+            'pokemon_id': int(p['d1']),
+            'name': self.pokemon_data[int(p['d1']) - 1]['Name'],
+            'latitude': float(p['d4']),
+            'longitude': float(p['d5']),
+            'disappear_time': int(tryFloat(p['d3'])),
+            'iv': tryFloat(p['d9'].split('^')[5]),
+        } for p in response]
+        #tmp_pokemon_list = filter(lambda x: x["iv"] >= 90, tmp_pokemon_list)
+        #tmp_pokemon_list.sort(key=lambda x: -x['iv'])
+
+        self._emit_log(" ==>> from pkget: %s/%s, %s" % (len(tmp_pokemon_list), olen, loc[2]))
+        return self.pokemons_parser(tmp_pokemon_list)
 
     def get_pokemon_from_social(self):
         if not hasattr(self.bot, 'mqtt_pokemon_list') or not self.bot.mqtt_pokemon_list:
             return []
 
         tmp_pokemon_list, self.bot.mqtt_pokemon_list = self.bot.mqtt_pokemon_list, []
+        self._emit_log(" ==>> from social: %s" % len(tmp_pokemon_list))
         return self.pokemons_parser(tmp_pokemon_list)
 
     def get_pokemon_from_url(self):
@@ -315,16 +498,11 @@ class MoveToMapPokemon(BaseTask):
 
         # If social is disabled, we will have to make sure the target still exists
         if verify:
-          for try_count in range(2):
-            if try_count == 1:
-                self._emit_failure('{} doesnt exist anymore. Retry after 5 seconds...'.format(pokemon['name']))
-                time.sleep(5)
+            # Sleep some time, so that we have accurate results (successfull cell data request)
+            time.sleep(5)
 
             nearby_pokemons = []
             nearby_stuff = self.bot.get_meta_cell()
-
-            # Sleep some time, so that we have accurate results (successfull cell data request)
-            time.sleep(2)
 
             # Retrieve nearby pokemons for validation
             if 'wild_pokemons' in nearby_stuff:
@@ -346,10 +524,6 @@ class MoveToMapPokemon(BaseTask):
                         pokemon['spawn_point_id'] = nearby_pokemon['spawn_point_id']
                         pokemon['disappear_time'] = nearby_pokemon['last_modified_timestamp_ms'] if is_wild else nearby_pokemon['expiration_timestamp_ms']
                     break
-
-            #  check exists or retry
-            if exists:
-                break
 
         # If target exists, catch it, otherwise ignore
         if exists:
@@ -412,10 +586,23 @@ class MoveToMapPokemon(BaseTask):
                         self._emit_log("Skipping pass {}".format(self.by_pass_times))
                     return WorkerResult.SUCCESS
                 self.by_pass_times = 0
-            #pokemon_list = self.get_pokemon_from_social()
-            pokemon_list = self.get_pokemon_from_pokezz()
+            if self.hj_mode:
+                self.hj_switch += 1
+            if self.hj_switch % 10 == 0:
+                pokemon_list = self.get_pokemon_from_social()
+            elif self.hj_switch % 2 == 1:
+                pokemon_list = self.get_pokemon_from_pokesniper()
+            elif self.hj_mode == 'pokezz':
+                pokemon_list = self.get_pokemon_from_pokezz()
+            elif self.hj_mode == 'pkget':
+                pokemon_list = self.get_pokemon_from_pkget()
+            elif self.hj_mode == 'poke5566':
+                pokemon_list = self.get_pokemon_from_poke5566()
         else:
             pokemon_list = self.get_pokemon_from_url()
+
+        if self.hj_mode:
+            pokemon_list = self.hj_filter(pokemon_list)
 
         if not self.hj_mode:
             pokemon_list.sort(key=lambda x: x['dist'])
