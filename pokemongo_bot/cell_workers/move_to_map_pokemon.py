@@ -93,18 +93,31 @@ class MoveToMapPokemon(BaseTask):
     SUPPORTED_TASK_API_VERSION = 1
 
     def initialize(self):
+        self.retry = self.config.get('retry', 1)
         self.hj_mode = self.config.get('hj_mode', False)
+        self.hj_filter = self.config.get('hj_filter', False)
         self.iv_catch = self.config.get('iv_catch', 0.99)
         self.iv_keep = self.config.get('iv_keep', 2)
         self.powerup_candy = self.config.get('powerup_candy', 20)
-        if self.hj_mode == 'pokezz':
-            self.pokezz_list = []
-            self.pokezz()
-        elif self.hj_mode == 'pkget' or self.hj_mode == 'poke5566':
+        if self.hj_mode:
+            #self.pokezz_list = []
+            #self.pokezz()
             self.locs = self.config.get('locs', [])
             shuffle(self.locs)
             self.session = None
-        self.hj_switch = 0
+            self.funcs = [
+                #self.get_pokemon_from_pokesniper,
+                #self.get_pokemon_from_pokezz,
+                self.get_pokemon_from_pkget,
+                #self.get_pokemon_from_pokesniper,
+                #self.get_pokemon_from_pokezz,
+                #self.get_pokemon_from_poke5566,
+                #self.get_pokemon_from_pokesniper,
+                #self.get_pokemon_from_pokezz,
+                self.get_pokemon_from_url,
+                self.get_pokemon_from_social,
+            ]
+
         self.last_map_update = 0
         self.pokemon_data = self.bot.pokemon_list
         self.unit = self.bot.config.distance_unit
@@ -170,7 +183,7 @@ class MoveToMapPokemon(BaseTask):
                 disappear = int(pokemon.get('expiration_timestamp_ms', 0) / 1000) or int(pokemon.get('disappear_time', 0) / 1000)
 
                 pokemon['encounter_id'] = pokemon.get('encounter_id', '')
-                pokemon['spawn_point_id'] = pokemon.get('spawn_point_id', '') or pokemon.get('spawnpoint_id', '')
+                pokemon['spawn_point_id'] = '' # pokemon.get('spawn_point_id', '') or pokemon.get('spawnpoint_id', '')
                 pokemon['iv'] = pokemon.get('iv', 0)
                 pokemon['disappear_time'] = disappear
                 pokemon['name'] = self.pokemon_data[pokemon['pokemon_id'] - 1]['Name']
@@ -222,31 +235,32 @@ class MoveToMapPokemon(BaseTask):
 
         return pokemons
 
-    def hj_filter(self, pokemon_list):
+    def apply_hj_filter(self, pokemon_list):
         if not len(pokemon_list):
             return pokemon_list
 
         family = {}
-        for p in inventory.pokemons().STATIC_DATA:
+        for p in inventory.pokemons().STATIC_DATA:  # initial family dict
             fid = p.first_evolution_id
             if not family.has_key(fid):
                 family[fid] = {'candy':-1, 'iv':0, 'catch_candy':False, 'catch_iv':False}
 
+        # prepare catch condition from inventory
         for p in inventory.pokemons().all():
             fid = p.first_evolution_id
-            if family[fid]['candy'] == -1:
+            if family[fid]['candy'] == -1:          # get candy
                 family[fid]['candy'] = p.candy_quantity
 
             if p.iv > self.iv_catch:
-                family[fid]['iv'] += 1
+                family[fid]['iv'] += 1              # count iv by family group
                 evolve_pid = p.pokemon_id
-                while inventory.pokemons().has_next_evolution(evolve_pid):
+                while inventory.pokemons().has_next_evolution(evolve_pid):           # count candy for evolve
                     family[fid]['candy'] -= inventory.pokemons().evolution_cost_for(evolve_pid)
                     evolve_pid = inventory.pokemons().next_evolution_ids_for(evolve_pid)[0]
 
-            iv_keep = (self.iv_keep*3) if p.pokemon_id == 133 else self.iv_keep
-            family[fid]['catch_iv'] = family[fid]['iv'] < iv_keep
-            family[fid]['catch_candy'] = family[fid]['candy'] < self.powerup_candy
+            iv_keep = (self.iv_keep*3) if p.pokemon_id == 133 else self.iv_keep      # special handle if eevee
+            family[fid]['catch_iv'] = family[fid]['iv'] < iv_keep                    # T/F need catch by iv
+            family[fid]['catch_candy'] = family[fid]['candy'] < self.powerup_candy   # T/F need catch by candy
 
         catch_list = []
         for p in pokemon_list:
@@ -259,6 +273,10 @@ class MoveToMapPokemon(BaseTask):
                 if family[fid]['catch_candy']:
                     catch_list.append(p)
 
+        if not len(catch_list) and len(pokemon_list):
+            self._emit_log(" ==>> no more record, add one for xp")
+            return pokemon_list[:1]
+
         return catch_list
 
     def get_pokemon_from_pokezz(self):
@@ -268,7 +286,7 @@ class MoveToMapPokemon(BaseTask):
         tmp_pokemon_list, self.pokezz_list = self.pokezz_list, []
         olen = len(tmp_pokemon_list)
 
-        tmp_pokemon_list.sort(key=lambda x: -x['iv'])
+        tmp_pokemon_list.sort(key=lambda x: (x['pokemon_id'],-x['iv']))
         groups = []
         for k, g in groupby(tmp_pokemon_list, lambda x: x['pokemon_id']):
             for t in g:
@@ -278,7 +296,7 @@ class MoveToMapPokemon(BaseTask):
                 break
         tmp_pokemon_list = groups
 
-        tmp_pokemon_list = filter(lambda x: x["iv"] >= 99, tmp_pokemon_list)
+        tmp_pokemon_list = filter(lambda x: x["iv"] >= 98, tmp_pokemon_list)
         self._emit_log(" ==>> from pokezz: %s/%s" % (len(tmp_pokemon_list),olen))
         return self.pokemons_parser(tmp_pokemon_list)
 
@@ -316,7 +334,7 @@ class MoveToMapPokemon(BaseTask):
             self._emit_log(" wrong: %s" % p['name'])
             pass
 
-        tmp_pokemon_list = filter(lambda x: x["iv"] >= 99, tmp_pokemon_list)
+        tmp_pokemon_list = filter(lambda x: x["iv"] >= 98, tmp_pokemon_list)
         self._emit_log(" ==>> from pokesniper: %s/%s" % (len(tmp_pokemon_list),olen))
         return self.pokemons_parser(tmp_pokemon_list)
 
@@ -393,12 +411,12 @@ class MoveToMapPokemon(BaseTask):
         self.locs.append(loc)
         llen = 0.05
         params = {
-            'v1': 111,
-            'v2': loc[0] + llen,
-            'v3': loc[1] + llen,
-            'v4': loc[0] - llen,
-            'v5': loc[1] - llen,
-            'v6': 0
+            'a': loc[0] + llen,
+            'b': loc[1] + llen,
+            'c': loc[0] - llen,
+            'd': loc[1] - llen,
+            'e': 0,
+            'f': 0,
         }
         headers = {
             'X-Requested-With': 'XMLHttpRequest',
@@ -451,6 +469,7 @@ class MoveToMapPokemon(BaseTask):
             return []
 
         tmp_pokemon_list = response.get('pokemons', [])
+        self._emit_log(" ==>> from url: %s" % len(tmp_pokemon_list))
         return self.pokemons_parser(tmp_pokemon_list)
 
     # TODO: refactor
@@ -498,6 +517,7 @@ class MoveToMapPokemon(BaseTask):
 
         # If social is disabled, we will have to make sure the target still exists
         if verify:
+          for i in range(self.retry):
             # Sleep some time, so that we have accurate results (successfull cell data request)
             time.sleep(5)
 
@@ -524,6 +544,10 @@ class MoveToMapPokemon(BaseTask):
                         pokemon['spawn_point_id'] = nearby_pokemon['spawn_point_id']
                         pokemon['disappear_time'] = nearby_pokemon['last_modified_timestamp_ms'] if is_wild else nearby_pokemon['expiration_timestamp_ms']
                     break
+            if exists == True:
+                break
+            else:
+                self._emit_failure('{} doesnt exist? '.format(pokemon['name']))
 
         # If target exists, catch it, otherwise ignore
         if exists:
@@ -552,9 +576,6 @@ class MoveToMapPokemon(BaseTask):
             json.dump(self.cache, outfile)
 
     def work(self):
-        if self.bot.last_catch_cooldown > time.time():
-            return WorkerResult.SUCCESS
-
         # check for pokeballs (excluding masterball)
         pokeballs_quantity = inventory.items().get(POKEBALL_ID).count
         superballs_quantity = inventory.items().get(GREATBALL_ID).count
@@ -587,22 +608,15 @@ class MoveToMapPokemon(BaseTask):
                     return WorkerResult.SUCCESS
                 self.by_pass_times = 0
             if self.hj_mode:
-                self.hj_switch += 1
-            if self.hj_switch % 10 == 0:
+                pokemon_list = self.funcs[0]()
+                self.funcs.append(self.funcs.pop(0))
+            else:
                 pokemon_list = self.get_pokemon_from_social()
-            elif self.hj_switch % 2 == 1:
-                pokemon_list = self.get_pokemon_from_pokesniper()
-            elif self.hj_mode == 'pokezz':
-                pokemon_list = self.get_pokemon_from_pokezz()
-            elif self.hj_mode == 'pkget':
-                pokemon_list = self.get_pokemon_from_pkget()
-            elif self.hj_mode == 'poke5566':
-                pokemon_list = self.get_pokemon_from_poke5566()
         else:
             pokemon_list = self.get_pokemon_from_url()
 
-        if self.hj_mode:
-            pokemon_list = self.hj_filter(pokemon_list)
+        if self.hj_filter:
+            pokemon_list = self.apply_hj_filter(pokemon_list)
 
         if not self.hj_mode:
             pokemon_list.sort(key=lambda x: x['dist'])

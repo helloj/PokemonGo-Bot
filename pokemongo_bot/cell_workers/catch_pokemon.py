@@ -24,9 +24,6 @@ class CatchPokemon(BaseTask):
         self.pokemon = []
 
     def work(self):
-        if self.bot.last_catch_cooldown > time.time():
-            return WorkerResult.SUCCESS
-
         # make sure we have SOME balls
         if sum([inventory.items().get(ball.value).count for ball in
     [Item.ITEM_POKE_BALL, Item.ITEM_GREAT_BALL, Item.ITEM_ULTRA_BALL]]) <= 0:

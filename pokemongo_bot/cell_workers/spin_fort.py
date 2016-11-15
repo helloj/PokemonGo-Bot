@@ -51,9 +51,6 @@ class SpinFort(BaseTask):
 
 
     def work(self):
-        if self.bot.last_catch_cooldown > time.time():
-            return WorkerResult.SUCCESS
-
         forts = self.get_forts_in_range()
 
         with self.bot.database as conn:

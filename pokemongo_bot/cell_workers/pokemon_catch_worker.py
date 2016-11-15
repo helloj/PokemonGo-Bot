@@ -112,9 +112,6 @@ class PokemonCatchWorker(BaseTask):
     ############################################################################
 
     def work(self, response_dict=None):
-        if self.bot.last_catch_cooldown > time.time():
-            return WorkerResult.SUCCESS
-
         response_dict = response_dict or self.create_encounter_api_call()
 
         # validate response
@@ -236,8 +233,7 @@ class PokemonCatchWorker(BaseTask):
                 break
 
         # simulate app
-        #time.sleep(5)
-        self.bot.last_catch_cooldown = time.time() + 5
+        time.sleep(5)
 
     def create_encounter_api_call(self):
         encounter_id = self.pokemon['encounter_id']

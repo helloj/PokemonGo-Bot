@@ -151,7 +151,7 @@ class FollowPath(BaseTask):
 
         last_lat, last_lng, last_alt = self.bot.position
 
-        if self.ptr > len(self.points):
+        if self.ptr >= len(self.points):
             self.ptr = 0
 
         point = self.points[self.ptr]
